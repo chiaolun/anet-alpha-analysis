@@ -93,6 +93,9 @@ def run_nnls_regression(y: pd.Series, X: pd.DataFrame) -> dict:
     t_intercept = intercept / se_intercept if se_intercept != 0 else np.nan
     p_intercept = 2 * (1 - stats.t.cdf(abs(t_intercept), dof)) if not np.isnan(t_intercept) else np.nan
     
+    # Residual returns (alpha stream after hedging out factors)
+    residual_returns = residuals
+    
     return {
         'intercept': intercept,
         'betas': dict(zip(factor_names, betas)),
@@ -104,6 +107,8 @@ def run_nnls_regression(y: pd.Series, X: pd.DataFrame) -> dict:
         'n_obs': n,
         'y_clean': y_clean,
         'X_clean': X_clean,
+        'y_pred': y_pred,
+        'residuals': residual_returns,
         'factor_names': factor_names
     }
 
@@ -155,7 +160,7 @@ def print_summary_stats(returns: pd.DataFrame):
     print(returns.corr().round(3).to_string())
 
 
-def print_results(result: dict, decomp: dict):
+def print_results(result: dict, decomp: dict, returns: pd.DataFrame):
     """Print NNLS regression results with variance decomposition."""
     print("\n" + "="*85)
     print("NNLS REGRESSION: ANET ~ SPY + CSCO + MAG7")
@@ -206,6 +211,31 @@ def print_results(result: dict, decomp: dict):
     print("-"*60)
     print(f"{'TOTAL':<10} {'':<10} {total_r2:>12.4f} {'100.0':>9}%")
     print(f"{'Residual':<10} {'':<10} {1-total_r2:>12.4f}")
+    
+    # Sharpe ratio comparison (at the end)
+    alpha = result['intercept']
+    residuals = result['residuals']
+    hedged_returns = alpha + residuals  # ANET - factor exposures (keeping alpha)
+    
+    hedged_annual_return = np.mean(hedged_returns) * 252
+    hedged_annual_vol = np.std(hedged_returns) * np.sqrt(252)
+    hedged_sharpe = hedged_annual_return / hedged_annual_vol
+    
+    anet_returns = returns['ANET'].dropna()
+    anet_annual_return = anet_returns.mean() * 252
+    anet_annual_vol = anet_returns.std() * np.sqrt(252)
+    anet_sharpe = anet_annual_return / anet_annual_vol
+    
+    print("\n" + "-"*85)
+    print("SHARPE RATIO COMPARISON (if you hedge out factor exposures)")
+    print("-"*85)
+    print(f"{'':20} {'Return':>12} {'Volatility':>12} {'Sharpe':>10}")
+    print("-"*60)
+    print(f"{'ANET (raw)':<20} {anet_annual_return*100:>11.2f}% {anet_annual_vol*100:>11.2f}% {anet_sharpe:>10.3f}")
+    print(f"{'ANET (hedged)':<20} {hedged_annual_return*100:>11.2f}% {hedged_annual_vol*100:>11.2f}% {hedged_sharpe:>10.3f}")
+    print("-"*60)
+    print(f"Hedging removes {(1 - hedged_annual_vol/anet_annual_vol)*100:.1f}% of volatility")
+    print(f"Sharpe improvement: {hedged_sharpe - anet_sharpe:+.3f} ({(hedged_sharpe/anet_sharpe - 1)*100:+.1f}%)")
     print("="*85)
 
 
@@ -229,7 +259,7 @@ def main():
     decomp = calculate_variance_decomposition(result, y, X)
     
     # Print results
-    print_results(result, decomp)
+    print_results(result, decomp, returns)
     
     # Save data
     returns.to_csv('anet_returns.csv')
