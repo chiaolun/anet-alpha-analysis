@@ -212,30 +212,59 @@ def print_results(result: dict, decomp: dict, returns: pd.DataFrame):
     print(f"{'TOTAL':<10} {'':<10} {total_r2:>12.4f} {'100.0':>9}%")
     print(f"{'Residual':<10} {'':<10} {1-total_r2:>12.4f}")
     
-    # Sharpe ratio comparison (at the end)
-    alpha = result['intercept']
-    residuals = result['residuals']
-    hedged_returns = alpha + residuals  # ANET - factor exposures (keeping alpha)
-    
-    hedged_annual_return = np.mean(hedged_returns) * 252
-    hedged_annual_vol = np.std(hedged_returns) * np.sqrt(252)
-    hedged_sharpe = hedged_annual_return / hedged_annual_vol
-    
-    anet_returns = returns['ANET'].dropna()
-    anet_annual_return = anet_returns.mean() * 252
-    anet_annual_vol = anet_returns.std() * np.sqrt(252)
-    anet_sharpe = anet_annual_return / anet_annual_vol
-    
+    # Staged hedge analysis - remove one factor at a time in SHAP order
     print("\n" + "-"*85)
-    print("SHARPE RATIO COMPARISON (if you hedge out factor exposures)")
+    print("STAGED HEDGE ANALYSIS (removing factors one at a time in SHAP order)")
     print("-"*85)
-    print(f"{'':20} {'Return':>12} {'Volatility':>12} {'Sharpe':>10}")
-    print("-"*60)
-    print(f"{'ANET (raw)':<20} {anet_annual_return*100:>11.2f}% {anet_annual_vol*100:>11.2f}% {anet_sharpe:>10.3f}")
-    print(f"{'ANET (hedged)':<20} {hedged_annual_return*100:>11.2f}% {hedged_annual_vol*100:>11.2f}% {hedged_sharpe:>10.3f}")
-    print("-"*60)
-    print(f"Hedging removes {(1 - hedged_annual_vol/anet_annual_vol)*100:.1f}% of volatility")
-    print(f"Sharpe improvement: {hedged_sharpe - anet_sharpe:+.3f} ({(hedged_sharpe/anet_sharpe - 1)*100:+.1f}%)")
+    print(f"{'Stage':<25} {'Return':>10} {'Vol':>10} {'Sharpe':>8} {'Δ Sharpe':>10}")
+    print("-"*70)
+    
+    # Get data aligned
+    data = pd.concat([returns['ANET'], returns[FACTORS]], axis=1).dropna()
+    y_clean = data['ANET'].values
+    X_clean = data[FACTORS]
+    
+    # Sort factors by SHAP importance (R² contribution)
+    sorted_factors = sorted(FACTORS, key=lambda x: abs(r2_contribs[x]), reverse=True)
+    # Filter to only factors with non-zero betas
+    active_factors = [f for f in sorted_factors if result['betas'][f] > 0]
+    
+    # Raw ANET
+    raw_return = np.mean(y_clean) * 252
+    raw_vol = np.std(y_clean) * np.sqrt(252)
+    raw_sharpe = raw_return / raw_vol
+    print(f"{'Raw ANET':<25} {raw_return*100:>9.2f}% {raw_vol*100:>9.2f}% {raw_sharpe:>8.3f} {'':>10}")
+    
+    # Progressive hedging
+    cumulative_hedge = np.zeros(len(y_clean))
+    prev_sharpe = raw_sharpe
+    
+    for i, factor in enumerate(active_factors):
+        beta = result['betas'][factor]
+        factor_contribution = beta * X_clean[factor].values
+        cumulative_hedge += factor_contribution
+        
+        # Hedged returns = ANET - cumulative factor exposures
+        hedged = y_clean - cumulative_hedge
+        
+        hedged_return = np.mean(hedged) * 252
+        hedged_vol = np.std(hedged) * np.sqrt(252)
+        hedged_sharpe = hedged_return / hedged_vol
+        delta_sharpe = hedged_sharpe - prev_sharpe
+        
+        factors_hedged = ", ".join(active_factors[:i+1])
+        if len(factors_hedged) > 23:
+            factors_hedged = f"−{i+1} factors"
+        else:
+            factors_hedged = f"−{factor}"
+        
+        print(f"{factors_hedged:<25} {hedged_return*100:>9.2f}% {hedged_vol*100:>9.2f}% {hedged_sharpe:>8.3f} {delta_sharpe:>+10.3f}")
+        prev_sharpe = hedged_sharpe
+    
+    print("-"*70)
+    final_vol_reduction = (1 - hedged_vol / raw_vol) * 100
+    total_sharpe_change = hedged_sharpe - raw_sharpe
+    print(f"Total: Vol reduced by {final_vol_reduction:.1f}%, Sharpe changed by {total_sharpe_change:+.3f}")
     print("="*85)
 
 
